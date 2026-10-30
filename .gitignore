@@ -1,0 +1,21 @@
+.local/
+__pycache__/
+*.pyc
+
+# Local credentials and generated certificate material
+.env
+.env.*
+!.env.example
+!.env.sample
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Runtime output and macOS metadata
+*.log
+*.bak
+.DS_Store
