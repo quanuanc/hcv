@@ -1,4 +1,4 @@
-package dev.cheng.vault_client.vault;
+package dev.cheng.vaultstarter;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -13,9 +13,10 @@ import org.springframework.vault.support.VaultResponse;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-@SpringBootTest
+@SpringBootTest(classes = dev.cheng.vault_client.VaultClientApplication.class)
 class VaultDatabaseIntegrationTests {
     @Autowired VaultCredentials liveCredentials;
+    @Autowired VaultOperations liveVault;
     @Value("${spring.datasource.url}") String url;
 
     @Test
@@ -23,10 +24,9 @@ class VaultDatabaseIntegrationTests {
         var actual = liveCredentials.get();
         var stale = new VaultResponse();
         stale.setData(Map.of("username", actual.username, "password", "intentionally-invalid-test-password", "ttl", 30));
-        var fresh = new VaultResponse();
-        fresh.setData(Map.of("username", actual.username, "password", actual.password, "ttl", 30));
         var vault = mock(VaultOperations.class);
-        when(vault.read(anyString())).thenReturn(stale, fresh);
+        when(vault.read(anyString())).thenReturn(stale)
+                .thenAnswer(invocation -> liveVault.read("database/static-creds/hcv-demo"));
         var credentials = new VaultCredentials(vault, mock(ExpiringSessionManager.class),
                 "test", Clock.systemUTC(), Duration.ofSeconds(30));
         var datasource = new RefreshingDataSource(new DriverManagerDataSource(url), credentials);

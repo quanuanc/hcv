@@ -12,6 +12,7 @@ os.environ.setdefault('VAULT_CACERT', str(BASE / '.local/server-tls/vault-ca.pem
 os.environ.setdefault('VAULT_TOKEN', (BASE / '.local/admin-token').read_text().strip())
 
 import hcv_demo as db
+import service_secret
 from two_step_client import CERT, KEY, credentials, login, request
 
 
@@ -27,6 +28,7 @@ def denied(label, path, **kwargs):
 
 
 db.setup()
+service_secret.setup()
 methods = db.vault('sys/auth')['data']
 if 'cert/' not in methods:
     db.vault('sys/auth/cert', {'type': 'cert'})
@@ -67,6 +69,11 @@ try:
     assert auth['policies'] == ['hcv-demo-read'], auth['policies']
     assert 0 < auth['lease_duration'] <= 900
     assert credentials(token)['username'] == db.APP
+    assert request(service_secret.PATH, token=token)['data']['data']['password']
+    denied('KV write with read-only token', service_secret.PATH,
+           data={'data': {'password': 'permission-test'}}, token=token)
+    denied('Other KV path with read-only token', 'app-secrets/data/unrelated', token=token)
+    print('PASS: the same token reads the service password; unrelated KV access is denied.')
     print('PASS: registered certificate login issues a 15-minute read-only token.')
     print('PASS: a separate TLS connection without client certificate can read using that token.')
     denied('Password rotation with read-only token', 'database/rotate-role/hcv-demo', data={}, token=token)

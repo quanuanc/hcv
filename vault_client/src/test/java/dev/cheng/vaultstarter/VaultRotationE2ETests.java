@@ -1,4 +1,4 @@
-package dev.cheng.vault_client.vault;
+package dev.cheng.vaultstarter;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -6,6 +6,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Clock;
 import java.util.function.BooleanSupplier;
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.Test;
@@ -16,14 +17,12 @@ import org.springframework.boot.ssl.SslBundles;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.util.ReflectionTestUtils;
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
 
 /** Real scheduled rotations; run with ../vault_server/verify-client-rotation.py. */
 @EnabledIfSystemProperty(named = "hcv.rotation.e2e", matches = "true")
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
+@SpringBootTest(classes = dev.cheng.vault_client.VaultClientApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "spring.datasource.hikari.maximum-pool-size=2",
         "spring.datasource.hikari.minimum-idle=0",
         "spring.datasource.hikari.connection-timeout=10000"
@@ -31,21 +30,47 @@ import static org.mockito.Mockito.*;
 class VaultRotationE2ETests {
     @Autowired HikariDataSource pool;
     @Autowired VaultCredentials credentials;
+    @Autowired VaultSecrets secrets;
+    @Autowired VaultProperties properties;
     @Autowired ExpiringSessionManager sessions;
     @Autowired SslBundles bundles;
-    @MockitoSpyBean VaultDataSourceConfiguration.VaultRefreshTask refreshTask;
-    @Value("${app.vault.uri}") String uri;
+    @Autowired VaultRefreshTask refreshTask;
+    @Value("${hcv.vault.uri}") String uri;
     @Value("${spring.datasource.url}") String jdbcUrl;
     @LocalServerPort int port;
 
     @Test
+    @org.junit.jupiter.api.Timeout(180)
     void survivesRealRotationsAndTokenExpiry() throws Exception {
         // Independent observer: its reads must not refresh the application's Token or credentials.
-        var configuration = new VaultDataSourceConfiguration();
-        var observerSessions = configuration.vaultSessions(bundles, uri, "spring-boot-demo");
-        var observer = configuration.vaultCredentials(bundles, observerSessions, uri,
-                "database/static-creds/hcv-demo", Duration.ofSeconds(1));
+        var configuration = new VaultAutoConfiguration();
+        var observerSessions = configuration.vaultSessions(bundles, properties);
+        var observerVault = configuration.vaultTemplate(bundles, observerSessions, properties);
+        var observer = new VaultCredentials(observerVault, observerSessions,
+                "database/static-creds/hcv-demo", Clock.systemUTC(), Duration.ofSeconds(1));
         var initialToken = ReflectionTestUtils.getField(sessions, "token");
+        var servicePassword = secrets.kv("demo-service");
+        var kvObserver = new KvSecret(observerVault.opsForVersionedKeyValue("app-secrets"), observerSessions,
+                "demo-service", "password", Clock.systemUTC(), Duration.ofSeconds(1));
+        for (int round = 1; round <= 2; round++) {
+            var previous = servicePassword.get();
+            // The admin-side Python runner updates KV only after seeing this ready marker.
+            System.out.println("E2E KV ready " + round);
+            await(() -> servicePassword.get().version() > previous.version(), 15,
+                    "Shared scheduler did not retrieve the new KV version");
+            var expected = kvObserver.refreshAfterFailure(kvObserver.get());
+            var actual = servicePassword.get();
+            assertTrue(actual.value().equals(expected.value()), "Loaded KV password must match Vault");
+            assertFalse(actual.value().equals(previous.value()), "KV password must really change");
+            try (var http = HttpClient.newHttpClient()) {
+                var response = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
+                        + "/api/demo-service/secret-status")).GET().build(), HttpResponse.BodyHandlers.ofString());
+                assertEquals(200, response.statusCode());
+                assertEquals("{\"version\":" + actual.version() + "}", response.body());
+                assertFalse(response.body().contains(actual.value()));
+            }
+            System.out.println("E2E KV update " + round + " observed; version=" + actual.version() + "; status HTTP=200");
+        }
         var baseline = observer.get();
         int pid = queryPid();
         System.out.println("E2E baseline PostgreSQL PID=" + pid);
@@ -78,7 +103,7 @@ class VaultRotationE2ETests {
         }
 
         // Deliberately stop proactive refresh for one rotation to exercise the actual stale-password path.
-        doNothing().when(refreshTask).refresh();
+        refreshTask.destroy();
         try {
             var stale = credentials.get();
             await(() -> {
@@ -94,7 +119,7 @@ class VaultRotationE2ETests {
             assertUsersEndpoint();
             System.out.println("E2E stale-cache recovery: new PID=" + nextPid + "; HTTP users=200");
         } finally {
-            doCallRealMethod().when(refreshTask).refresh();
+            refreshTask.afterPropertiesSet();
         }
         assertTrue(!initialToken.equals(ReflectionTestUtils.getField(sessions, "token")),
                 "Application must re-login after the real 20-second Token TTL");

@@ -1,4 +1,4 @@
-package dev.cheng.vault_client.vault;
+package dev.cheng.vaultstarter;
 
 import java.sql.Connection;
 import java.sql.SQLException;

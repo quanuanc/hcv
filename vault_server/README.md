@@ -41,7 +41,7 @@ tls_require_and_verify_client_cert = false
 | `.local/client/client.key` | 客户端私钥，仅配置给需要登录的客户端 |
 | `.local/admin-token` | 随机生成的本机管理员 Token，仅用于管理实验环境 |
 | `auth/cert/certs/spring-boot-demo` | Vault 登记的客户端证书角色 |
-| `hcv-demo-read.hcl` | 仅允许读取演示账号凭据的策略 |
+| `hcv-demo-read.hcl` | 仅允许读取演示账号凭据及指定 KV 密码的策略 |
 
 客户端证书为 90 天有效的自签名证书，包含 `clientAuth` 扩展。
 Vault 登记并信任这张具体证书；另一个使用相同 CN 的证书也不能登录。
@@ -211,3 +211,31 @@ python3 vault_server/verify-client-rotation.py
 正常结束或测试失败时，脚本都会在 `finally` 中恢复原来的证书 Token TTL，
 数据库密码仍保持每 10 秒轮换。测试通常需要约一分钟；默认 Maven 测试不会执行该耗时测试。
 不要同时运行多份该脚本，避免临时 Token TTL 配置互相覆盖。
+
+
+## 外部服务密码：KV v2
+
+同一台 Vault 的 `app-secrets/` 挂载点新增 KV v2 引擎，逻辑路径为 `demo-service`，
+字段为 `password`。HTTP 读取路径为 `GET /v1/app-secrets/data/demo-service`；
+密码位于响应 `data.data.password`，版本位于 `data.metadata.version`。
+它和数据库凭据共用 `spring-boot-demo` 证书登录及 `hcv-demo-read` 策略。
+
+```bash
+# 在项目根目录执行。仅 setup 会补充引擎及更新策略；已有密码不会被覆盖。
+python3 vault_server/service_secret.py setup
+# 生成新随机密码并写入下一版本，使用 CAS 避免覆盖并发更新。
+python3 vault_server/service_secret.py rotate
+# 仅显示版本号，不显示密码。
+python3 vault_server/service_secret.py status
+```
+
+这些管理命令从 `.local/admin-token` 读取管理员凭据。应用策略仅允许读取
+`app-secrets/data/demo-service`，不允许写入、列举或管理 KV 元数据。
+`configure-tls-auth.py` 已集成初始化，因此重新配置开发服务器也会创建该密码。
+
+KV v2 是带版本的密码存储，不会主动修改第三方服务的账号密码，也不会自动每 10 秒
+生成新密码。当前例子由管理脚本更新，客户端每 5 秒检查并自动取得新值。
+实际外部服务需要由它自身的改密流程或专用轮换任务把新密码写入 Vault。
+
+联合测试 `verify-client-rotation.py` 现在同时覆盖两次真实 KV 更新、四次数据库自动轮换
+和 Token 到期重新登录。测试只打印版本、连接 PID 与成功状态，不打印密码或 Token。
