@@ -3,7 +3,7 @@
 当前入口为 **https://127.0.0.1:8200**，仅本机访问。Vault 仍为学习用开发模式，
 数据保存在内存中。原来的 HTTP 入口和 `dev-only-root` Token 已停用。
 Postgres.app PostgreSQL 17 中的 `hcv_demo` 数据库和数据保留，
-`hcv_demo_app` 的密码继续由 Vault 每 30 分钟轮换。
+`hcv_demo_app` 的密码继续由 Vault 每 10 秒轮换（便于本地测试）。
 
 ## 两步认证
 
@@ -51,7 +51,7 @@ Vault 登记并信任这张具体证书；另一个使用相同 CN 的证书也�
 
 登录后签发的 Token 仅含 `hcv-demo-read` 策略，不附带默认策略，
 最长有效期为 15 分钟。客户端到期后重新进行证书登录；本演示不通过续租延长 Token 生命周期。
-数据库密码每 30 分钟更换，与 Token 的有效期独立。
+数据库密码每 10 秒更换，与 Token 的有效期独立。
 
 ## 使用 curl 完整演示
 
@@ -172,10 +172,10 @@ Vault 与 PostgreSQL 必须持续运行，Mac 休眠期间不能保证轮换按�
 - 无 Token、无效 Token、已撤销 Token、旧 `dev-only-root` Token 读取均失败。
 - 只带证书、不带 Token 读取失败。
 - 应用 Token 无法调用管理员 API 或触发密码轮换。
-- 取出的密码可连接 `hcv_demo`，轮换配置仍为 1800 秒。
+- 取出的密码可连接 `hcv_demo`，轮换配置为 10 秒。
 
 数据库轮换实验另可由管理员执行 `python3 hcv_demo.py verify`，
-它临时改用 10 秒周期验证自动轮换和新旧密码，然后恢复为 30 分钟。
+它临时改用 10 秒周期验证自动轮换和新旧密码，然后恢复执行前的轮换周期。
 
 ## 数据库权限
 
@@ -190,3 +190,24 @@ PostgreSQL 侧仍沿用本机回环连接 `sslmode=disable`。
 [证书认证 API](https://developer.hashicorp.com/vault/api-docs/auth/cert)、
 [listener TLS 配置](https://developer.hashicorp.com/vault/docs/configuration/listener/tcp)、
 [数据库静态角色](https://developer.hashicorp.com/vault/api-docs/secret/databases#create-static-role)。
+
+
+## 客户端真实轮换端到端测试
+
+```bash
+# 在项目根目录执行；需要 Vault 与 PostgreSQL 已启动。
+python3 vault_server/verify-client-rotation.py
+```
+
+脚本将数据库密码轮换周期设为 10 秒，并临时将证书角色签发的 Token TTL 设为
+20 秒，然后启动真实 Spring Boot HTTP 服务运行专用测试。管理员 Token 仅供 Python
+脚本调整服务端配置，不传给 Java 客户端。测试不手动触发密码轮换，等待 Vault 调度器执行。
+
+测试检查三轮密码变化：旧密码被 PostgreSQL 拒绝、客户端后台任务取得新密码、
+驱逐连接池连接后 PostgreSQL 后端 PID 改变、真实 `/api/users` 请求返回 200。
+第四轮暂停客户端后台任务，让缓存保持旧密码，验证物理连接认证失败后的取密重试。
+最后检查应用 Token 已重新获取。Token 和密码不写入测试日志。
+
+正常结束或测试失败时，脚本都会在 `finally` 中恢复原来的证书 Token TTL，
+数据库密码仍保持每 10 秒轮换。测试通常需要约一分钟；默认 Maven 测试不会执行该耗时测试。
+不要同时运行多份该脚本，避免临时 Token TTL 配置互相覆盖。

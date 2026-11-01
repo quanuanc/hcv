@@ -75,8 +75,8 @@ try:
     result = db.psql('SELECT current_user, current_database();',
                      user=db.APP, database=db.DB, password=data['password'])
     assert db.APP + '|' + db.DB in result.stdout
-    assert data['rotation_period'] == 1800
-    print('PASS: retrieved password authenticates to PostgreSQL; rotation remains 30m.')
+    assert data['rotation_period'] == 10
+    print('PASS: retrieved password authenticates to PostgreSQL; rotation period is 10s.')
 finally:
     db.vault('auth/token/revoke', {'token': token})
 denied('Read with revoked token', db.CREDS_PATH, token=token)

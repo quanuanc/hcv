@@ -141,12 +141,12 @@ GRANT {APP} TO {MANAGER} WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
         'max_open_connections': 2,
     })
     vault(ROLE_PATH, {
-        'db_name': 'hcv-demo', 'username': APP, 'rotation_period': '30m',
+        'db_name': 'hcv-demo', 'username': APP, 'rotation_period': '10s',
         'rotation_statements': ['ALTER ROLE "{{name}}" WITH PASSWORD \'{{password}}\';'],
     })
     policy = Path(__file__).with_name('hcv-demo-read.hcl').read_text()
     vault('sys/policies/acl/hcv-demo-read', {'policy': policy})
-    print('Created hcv_demo; Vault manages hcv_demo_app with a 30-minute rotation period.')
+    print('Created hcv_demo; Vault manages hcv_demo_app with a 10-second rotation period.')
     status()
 
 
@@ -171,7 +171,7 @@ def connect():
 
 
 def verify():
-    """Exercise a scheduled rotation, restore 30m, then test manual rotation."""
+    """Exercise a scheduled rotation, restore the original period, then test manual rotation."""
     before = creds()
     psql('SELECT current_user, current_database();', user=APP,
          database=DB, password=before['password'])
@@ -200,16 +200,16 @@ def verify():
         else:
             raise RuntimeError('No automatic rotation observed within 55 seconds')
     finally:
-        set_period('30m')
+        set_period(f"{before['rotation_period']}s")
         vault('database/rotate-role/hcv-demo', {})
     current = creds()
-    assert current['rotation_period'] == 1800
+    assert current['rotation_period'] == before['rotation_period']
     result = psql('CREATE TABLE IF NOT EXISTS public.vault_learning (id integer PRIMARY KEY, message text); '
                  "INSERT INTO public.vault_learning VALUES (1, 'hello from Vault') "
                  'ON CONFLICT (id) DO UPDATE SET message=EXCLUDED.message; '
                  'SELECT current_user, current_database(), message FROM public.vault_learning;',
                  user=APP, database=DB, password=current['password'])
-    print('PASS: restored 30m and reset timer; application can create/write/read its demo table.')
+    print('PASS: restored original rotation period and reset timer; application can create/write/read its demo table.')
     print(result.stdout.strip())
     status()
 
